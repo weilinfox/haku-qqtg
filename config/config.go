@@ -8,9 +8,10 @@ import (
 )
 
 type QQConfig struct {
-	Account  int64
-	Password string
-	Groups   []int64
+	Account    int64
+	Password   string
+	SignServer string
+	Groups     []int64
 }
 
 type TGConfig struct {
@@ -67,8 +68,9 @@ func createSampleConfig() {
 		`title = "configuration of qqtg-bridge"
 
 [qq]
-  account=10086
-  password="qq password"
+  account=0
+  password=""
+  signServer=""
   groups=[1111111,2222222]
 
 [tg]
