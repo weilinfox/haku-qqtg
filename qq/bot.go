@@ -52,6 +52,10 @@ func Init() {
 	// default android watch protocol may fail to log in
 	// client.SystemDeviceInfo.Protocol = client.IPad
 
+	if config.GlobalConfig.QQ.Password != "" {
+		logger.Warnf("Password login not supported, will be ignore")
+	}
+
 	appInfo := auth.AppList["linux"]["3.2.15-30366"]
 	Instance.UseVersion(appInfo)
 
@@ -278,6 +282,10 @@ func Login() {
 		}
 
 		break
+	}
+
+	if config.GlobalConfig.QQ.Account != 0 && config.GlobalConfig.QQ.Account != int64(Instance.Uin) {
+		logger.Warnf("The QQ id in configure file (%v) is vary from logined.", config.GlobalConfig.QQ.Account)
 	}
 
 	logger.Infof("qq login: %s", Instance.NickName())
