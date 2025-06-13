@@ -1,8 +1,10 @@
 package tg
 
 import (
+	"bytes"
 	"fmt"
 	tgbotapi "github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 	"github.com/sihuan/qqtg-bridge/cache"
 	"github.com/sihuan/qqtg-bridge/message"
 	"github.com/sihuan/qqtg-bridge/utils"
@@ -18,14 +20,14 @@ import (
 type ChatChan struct {
 	bot      *Bot
 	chatid   int64
-	tempChan chan *tgbotapi.Message
+	tempChan chan *models.Message
 }
 
 func (b *Bot) NewChatChan(chatid int64) {
 	b.Chats[chatid] = ChatChan{
 		bot:      b,
 		chatid:   chatid,
-		tempChan: make(chan *tgbotapi.Message, 20),
+		tempChan: make(chan *models.Message, 20),
 	}
 }
 
@@ -40,15 +42,15 @@ func (c ChatChan) Read() *message.Message {
 		text += "\n" + msg.Caption
 	}
 	if msg.Photo != nil {
-		if imageURL, err := c.bot.GetFileDirectURL(msg.Photo[len(msg.Photo)-1].FileID); err == nil {
-			imageURLs = append(imageURLs, imageURL)
+		if file, err := c.bot.GetFile(c.bot.Context, &tgbotapi.GetFileParams{FileID: msg.Photo[len(msg.Photo)-1].FileID}); err == nil {
+			imageURLs = append(imageURLs, c.bot.FileDownloadLink(file))
 		}
 	}
 
 	if msg.Sticker != nil {
-		if imageURL, err := c.bot.GetFileDirectURL(msg.Sticker.FileID); err == nil {
+		if file, err := c.bot.GetFile(c.bot.Context, &tgbotapi.GetFileParams{FileID: msg.Sticker.FileID}); err == nil {
 			// webp && webm
-			imageURLs = append(imageURLs, imageURL)
+			imageURLs = append(imageURLs, c.bot.FileDownloadLink(file))
 		}
 	}
 
@@ -60,16 +62,16 @@ func (c ChatChan) Read() *message.Message {
 	//}
 
 	if msg.Document != nil {
-		if docURL, err := c.bot.GetFileDirectURL(msg.Document.FileID); err == nil {
+		if file, err := c.bot.GetFile(c.bot.Context, &tgbotapi.GetFileParams{FileID: msg.Document.FileID}); err == nil {
 			// gif will appear as video/mp4 here
 			if msg.Document.MimeType == "video/mp4" {
-				imageURLs = append(imageURLs, docURL)
+				imageURLs = append(imageURLs, c.bot.FileDownloadLink(file))
 			}
 		}
 	}
 
 	if msg.ReplyToMessage != nil {
-		replyid = int64(msg.ReplyToMessage.MessageID)
+		replyid = int64(msg.ReplyToMessage.ID)
 	}
 	if text == "" && len(imageURLs) == 0 {
 		text = "不支持的类型消息"
@@ -78,13 +80,12 @@ func (c ChatChan) Read() *message.Message {
 		Sender:    msg.From.FirstName,
 		ImageURLs: imageURLs,
 		ReplyID:   replyid,
-		ID:        int64(msg.MessageID),
+		ID:        int64(msg.ID),
 		Text:      text,
 	}
 }
 
 func (c ChatChan) Write(msg *message.Message) {
-	var sendingMsg tgbotapi.Chattable
 	text := fmt.Sprintf("[%s]: %s", msg.Sender, msg.Text)
 	var replyTgID = 0
 
@@ -98,7 +99,7 @@ func (c ChatChan) Write(msg *message.Message) {
 
 	var cacheFile []string
 	if msg.ImageURLs != nil {
-		var photos []interface{}
+		var photos []models.InputMedia
 		for i, url := range msg.ImageURLs {
 			// url \n name
 			su := strings.Split(url, "\n")
@@ -157,38 +158,53 @@ func (c ChatChan) Write(msg *message.Message) {
 				}
 
 				// tgbotapi.NewInputMediaDocument does not function as expected
-				inputDocumentMp4 := tgbotapi.NewInputMediaVideo(tgbotapi.FilePath(outf))
+				inputDocumentMp4 := &models.InputMediaVideo{
+					Media:           "attach://" + filepath.Base(outf),
+					MediaAttachment: bytes.NewReader(utils.ReadFile(outf)),
+				}
 				if i == 0 {
 					inputDocumentMp4.Caption = text
 				}
 				photos = append(photos, inputDocumentMp4)
 				cacheFile = append(cacheFile, outf)
 			default:
-				inputMediaPhoto := tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(url))
+				inputMediaPhoto := &models.InputMediaPhoto{Media: url}
 				if i == 0 {
 					inputMediaPhoto.Caption = text
 				}
 				photos = append(photos, inputMediaPhoto)
 			}
 		}
-		mediaGroupMsg := tgbotapi.NewMediaGroup(c.chatid, photos)
-		if replyTgID != 0 {
-			mediaGroupMsg.ReplyToMessageID = replyTgID
+
+		mediaGroupParams := &tgbotapi.SendMediaGroupParams{
+			ChatID: c.chatid,
+			Media:  photos,
 		}
-		sendingMsg = mediaGroupMsg
+		if replyTgID != 0 {
+			mediaGroupParams.ReplyParameters = &models.ReplyParameters{MessageID: replyTgID}
+		}
+
+		sent, err := c.bot.SendMediaGroup(c.bot.Context, mediaGroupParams)
+		if err != nil {
+			logger.WithError(err).Errorln("Send media group failed")
+		} else {
+			cache.TG2QQCache.Add(int64(sent[0].ID), msg.ID)
+			cache.QQ2TGCache.Add(msg.ID, int64(sent[0].ID))
+		}
 	} else {
-		textMsg := tgbotapi.NewMessage(c.chatid, text)
+		textMsg := &tgbotapi.SendMessageParams{ChatID: c.chatid, Text: text}
 		if replyTgID != 0 {
-			textMsg.ReplyToMessageID = replyTgID
+			textMsg.ReplyParameters = &models.ReplyParameters{MessageID: replyTgID}
 		}
-		sendingMsg = textMsg
+
+		sent, err := c.bot.SendMessage(c.bot.Context, textMsg)
+		if err != nil {
+			logger.WithError(err).Errorln("Send message failed")
+		} else {
+			cache.TG2QQCache.Add(int64(sent.ID), msg.ID)
+			cache.QQ2TGCache.Add(msg.ID, int64(sent.ID))
+		}
 	}
-	sentMsg, err := c.bot.Send(sendingMsg)
-	if err != nil {
-		logger.WithError(err).Errorln("Send message failed")
-	}
-	cache.TG2QQCache.Add(int64(sentMsg.MessageID), msg.ID)
-	cache.QQ2TGCache.Add(msg.ID, int64(sentMsg.MessageID))
 
 	for _, f := range cacheFile {
 		os.Remove(f)

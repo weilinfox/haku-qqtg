@@ -1,7 +1,9 @@
 package tg
 
 import (
+	"context"
 	tgbotapi "github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 	"github.com/sihuan/qqtg-bridge/config"
 	"github.com/sirupsen/logrus"
 	"log"
@@ -15,6 +17,7 @@ type Bot struct {
 	*tgbotapi.Bot
 	Chats map[int64]ChatChan
 	start bool
+	context.Context
 }
 
 // Instance Bot 实例
@@ -45,9 +48,10 @@ func Init() {
 		proxyClient := &http.Client{
 			Transport: proxyTrans,
 		}
-		bot, err = tgbotapi.New(config.GlobalConfig.TG.Token, tgbotapi.WithHTTPClient(time.Second, proxyClient))
+		bot, err = tgbotapi.New(config.GlobalConfig.TG.Token, tgbotapi.WithDefaultHandler(RouteMsg),
+			tgbotapi.WithHTTPClient(time.Second, proxyClient))
 	} else {
-		bot, err = tgbotapi.New(config.GlobalConfig.TG.Token)
+		bot, err = tgbotapi.New(config.GlobalConfig.TG.Token, tgbotapi.WithDefaultHandler(RouteMsg))
 	}
 
 	if err != nil {
@@ -66,24 +70,24 @@ func MakeChan() {
 	}
 }
 
-func StartService() {
+func StartService(ctx *context.Context) {
 	if Instance.start {
 		return
 	}
 
+	Instance.Context = *ctx
 	Instance.start = true
 
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
+	Instance.Bot.Start(*ctx)
+}
 
-	updates := Instance.GetUpdatesChan(u)
-	for update := range updates {
-		if update.Message == nil || (!update.Message.Chat.IsGroup() && !update.Message.Chat.IsSuperGroup()) {
-			continue
-		}
-		if chat, ok := Instance.Chats[update.Message.Chat.ID]; ok {
-			logger.Infof("[%s]: %s %s", update.Message.From.FirstName, update.Message.Text, update.Message.Caption)
-			chat.tempChan <- update.Message
-		}
+func RouteMsg(_ context.Context, b *tgbotapi.Bot, update *models.Update) {
+	if update.Message == nil || (update.Message.Chat.Type != models.ChatTypeGroup && update.Message.Chat.Type != models.ChatTypeSupergroup) {
+		return
+	}
+
+	if chat, ok := Instance.Chats[update.Message.Chat.ID]; ok {
+		logger.Infof("[%s]: %s %s", update.Message.From.FirstName, update.Message.Text, update.Message.Caption)
+		chat.tempChan <- update.Message
 	}
 }
