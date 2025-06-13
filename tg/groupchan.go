@@ -2,7 +2,7 @@ package tg
 
 import (
 	"fmt"
-	"github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tgbotapi "github.com/go-telegram/bot"
 	"github.com/sihuan/qqtg-bridge/cache"
 	"github.com/sihuan/qqtg-bridge/message"
 	"github.com/sihuan/qqtg-bridge/utils"

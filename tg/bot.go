@@ -1,17 +1,18 @@
 package tg
 
 import (
-	"github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tgbotapi "github.com/go-telegram/bot"
 	"github.com/sihuan/qqtg-bridge/config"
 	"github.com/sirupsen/logrus"
 	"log"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 // Bot 全局 Bot
 type Bot struct {
-	*tgbotapi.BotAPI
+	*tgbotapi.Bot
 	Chats map[int64]ChatChan
 	start bool
 }
@@ -24,7 +25,7 @@ var logger = logrus.WithField("tg", "internal")
 // 使用 config.GlobalConfig 初始化 bot
 func Init() {
 	var (
-		bot      *tgbotapi.BotAPI
+		bot      *tgbotapi.Bot
 		err      error
 		proxyUrl *url.URL = nil
 	)
@@ -44,18 +45,18 @@ func Init() {
 		proxyClient := &http.Client{
 			Transport: proxyTrans,
 		}
-		bot, err = tgbotapi.NewBotAPIWithClient(config.GlobalConfig.TG.Token, tgbotapi.APIEndpoint, proxyClient)
+		bot, err = tgbotapi.New(config.GlobalConfig.TG.Token, tgbotapi.WithHTTPClient(time.Second, proxyClient))
 	} else {
-		bot, err = tgbotapi.NewBotAPI(config.GlobalConfig.TG.Token)
+		bot, err = tgbotapi.New(config.GlobalConfig.TG.Token)
 	}
 
 	if err != nil {
 		log.Panic(err)
 	}
 	Instance = &Bot{
-		BotAPI: bot,
-		Chats:  mc,
-		start:  false,
+		Bot:   bot,
+		Chats: mc,
+		start: false,
 	}
 }
 

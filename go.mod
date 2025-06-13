@@ -7,7 +7,7 @@ toolchain go1.24.4
 require (
 	github.com/Baozisoftware/qrcode-terminal-go v0.0.0-20170407111555-c0650d8dff0f
 	github.com/LagrangeDev/LagrangeGo v0.1.4
-	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
+	github.com/go-telegram/bot v1.15.0
 	github.com/hashicorp/golang-lru v1.0.2
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/viper v1.20.1
