@@ -5,15 +5,15 @@ import (
 	"bytes"
 	"fmt"
 	qrcodeTerminal "github.com/Baozisoftware/qrcode-terminal-go"
-	"github.com/Mrs4s/MiraiGo/binary"
-	"github.com/Mrs4s/MiraiGo/client"
-	mirai "github.com/Mrs4s/MiraiGo/message"
+	"github.com/LagrangeDev/LagrangeGo/client"
+	"github.com/LagrangeDev/LagrangeGo/client/auth"
+	"github.com/LagrangeDev/LagrangeGo/client/packets/wtlogin/qrcodestate"
+	mirai "github.com/LagrangeDev/LagrangeGo/message"
+	"github.com/LagrangeDev/LagrangeGo/utils/crypto"
 	"github.com/sihuan/qqtg-bridge/config"
 	"github.com/sihuan/qqtg-bridge/utils"
 	"github.com/sirupsen/logrus"
 	"github.com/tuotoo/qrcode"
-	asc2art "github.com/yinghau76/go-ascii-art"
-	"image"
 	"net/http"
 	"net/url"
 	"os"
@@ -43,7 +43,7 @@ func Init() {
 	mc := make(map[int64]ChatChan)
 	Instance = &Bot{
 		QQClient: client.NewClient(
-			config.GlobalConfig.QQ.Account,
+			uint32(config.GlobalConfig.QQ.Account),
 			config.GlobalConfig.QQ.Password,
 		),
 		Chats: mc,
@@ -52,19 +52,34 @@ func Init() {
 	// default android watch protocol may fail to log in
 	// client.SystemDeviceInfo.Protocol = client.IPad
 
+	if config.GlobalConfig.QQ.Password != "" {
+		logger.Warnf("Password login not supported, will be ignore")
+	}
+
+	appInfo := auth.AppList["linux"]["3.2.15-30366"]
+	Instance.UseVersion(appInfo)
+
+	if config.GlobalConfig.QQ.SignServer == "" {
+		Instance.AddSignServer("https://sign.lagrangecore.org/api/sign/30366")
+	} else {
+		Instance.AddSignServer(config.GlobalConfig.QQ.SignServer)
+	}
+
 	b, _ := utils.FileExist("./device.json")
 	if !b {
 		logger.Warnln("no device.json, GenRandomDevice")
 		GenRandomDevice()
 	}
-	err := client.SystemDeviceInfo.ReadJson(utils.ReadFile("./device.json"))
+	device, err := auth.LoadOrSaveDevice("./device.json")
 
 	if err != nil {
 		logger.WithError(err).Panic("device.json error")
 	}
+	Instance.UseDevice(device)
 
 	var proxyUrl *url.URL = nil
 	if config.GlobalConfig.Proxy.Enable {
+		var err error
 		proxyUrl, err = url.Parse(config.GlobalConfig.Proxy.URL)
 		if err != nil {
 			logger.WithError(err).Errorln("Configure proxy failed")
@@ -86,12 +101,13 @@ func Init() {
 
 // GenRandomDevice 生成随机设备信息
 func GenRandomDevice() {
-	client.GenRandomDevice()
-	b, _ := utils.FileExist("./device.json")
-	if b {
-		logger.Warn("device.json exists, will not write device to file")
+	b, err := utils.FileExist("./device.json")
+	if err != nil {
+		logger.WithError(err).Errorln("device.json existence check error")
+	} else if b {
+		logger.Warn("device.json exists, write new device to file")
 	}
-	err := os.WriteFile("device.json", client.SystemDeviceInfo.ToJson(), 0o755)
+	err = auth.NewDeviceInfo(int(crypto.RandU32())).Save("./device.json")
 	if err != nil {
 		logger.WithError(err).Errorf("unable to write device.json")
 	}
@@ -99,15 +115,15 @@ func GenRandomDevice() {
 
 // QrcodeLogin 扫码登陆
 func QrcodeLogin() (*client.LoginResponse, error) {
-	resp, err := Instance.FetchQRCode()
+	resp, _, err := Instance.FetchQRCode(1, 2, 1)
 	if err != nil {
 		return nil, err
 	}
-	fi, err := qrcode.Decode(bytes.NewReader(resp.ImageData))
+	fi, err := qrcode.Decode(bytes.NewReader(resp))
 	if err != nil {
 		return nil, err
 	}
-	_ = os.WriteFile("qrcode.png", resp.ImageData, 0o644)
+	_ = os.WriteFile("qrcode.png", resp, 0o644)
 	defer func() { _ = os.Remove("qrcode.png") }()
 	if Instance.Uin != 0 {
 		logger.Infof("Use mobile QQ scan QR code (qrcode.png) with ID %v login: ", Instance.Uin)
@@ -116,36 +132,33 @@ func QrcodeLogin() (*client.LoginResponse, error) {
 	}
 	time.Sleep(time.Second)
 	qrcodeTerminal.New().Get(fi.Content).Print()
-	s, err := Instance.QueryQRCodeStatus(resp.Sig)
+	s, err := Instance.GetQRCodeResult()
 	if err != nil {
 		return nil, err
 	}
-	prevState := s.State
+	prevState := s
 	for {
 		time.Sleep(time.Second)
-		s, _ = Instance.QueryQRCodeStatus(resp.Sig)
-		if s == nil {
+		s, _ = Instance.GetQRCodeResult()
+		if prevState == s {
 			continue
 		}
-		if prevState == s.State {
-			continue
-		}
-		prevState = s.State
+		prevState = s
 
-		switch s.State {
-		case client.QRCodeCanceled:
+		switch s {
+		case qrcodestate.Canceled:
 			logger.Fatalf("Scan was canceled by user.")
-		case client.QRCodeTimeout:
+		case qrcodestate.Expired:
 			logger.Fatalf("QR code was expired.")
-		case client.QRCodeWaitingForConfirm:
+		case qrcodestate.WaitingForConfirm:
 			logger.Infof("Scan succeed, please confirm login.")
-		case client.QRCodeConfirmed:
-			resp, err := Instance.QRCodeLogin(s.LoginInfo)
+		case qrcodestate.Confirmed:
+			resp, err := Instance.QRCodeLogin()
 			if err != nil {
 				return nil, err
 			}
 			return resp, err
-		case client.QRCodeImageFetch, client.QRCodeWaitingForScan:
+		case qrcodestate.WaitingForScan:
 			// ignore
 		}
 	}
@@ -155,16 +168,16 @@ func QrcodeLogin() (*client.LoginResponse, error) {
 func Login() {
 	if exist, _ := utils.FileExist("session.token"); exist {
 		logger.Infof("Find session token cache.")
-		token, err := os.ReadFile("session.token")
+		token, _ := os.ReadFile("session.token")
+		sig, err := auth.UnmarshalSigInfo(token, true)
 		if err == nil {
-			r := binary.NewReader(token)
-			cu := r.ReadInt64()
-			if cu != Instance.Uin {
-				logger.Fatalf("The QQ id in configure file (%v) is vary from cached token (%v) .", Instance.Uin, cu)
+			if Instance.Uin != 0 && sig.Uin != Instance.Uin {
+				logger.Fatalf("The QQ id in configure file (%v) is vary from cached token (%v) .", Instance.Uin, sig.Uin)
 				logger.Fatalf("Exit now.")
 				os.Exit(0)
 			}
-			if err = Instance.TokenLogin(token); err != nil {
+			Instance.UseSig(sig)
+			if err = Instance.FastLogin(); err != nil {
 				_ = os.Remove("session.token")
 				logger.Warnf("Token login failed: %v .", err)
 				os.Exit(1)
@@ -175,7 +188,7 @@ func Login() {
 		}
 	}
 
-	resp, err := Instance.Login()
+	resp, err := QrcodeLogin()
 	console := bufio.NewReader(os.Stdin)
 
 	for {
@@ -187,19 +200,19 @@ func Login() {
 		if !resp.Success {
 			switch resp.Error {
 
-			case client.NeedCaptcha:
+			/*	case client.NeedCaptcha:
 				img, _, _ := image.Decode(bytes.NewReader(resp.CaptchaImage))
 				fmt.Println(asc2art.New("image", img).Art)
 				fmt.Print("please input captcha: ")
 				text, _ := console.ReadString('\n')
 				resp, err = Instance.SubmitCaptcha(strings.ReplaceAll(text, "\n", ""), resp.CaptchaSign)
-				continue
+				continue  */
 
 			case client.UnsafeDeviceError:
-				fmt.Printf("device lock -> %v\n", resp.VerifyUrl)
+				fmt.Printf("device lock -> %v\n", resp.VerifyURL)
 				os.Exit(4)
 
-			case client.SMSNeededError:
+			/*	case client.SMSNeededError:
 				fmt.Println("device lock enabled, Need SMS Code")
 				fmt.Printf("Send SMS to %s ? (yes)", resp.SMSPhone)
 				t, _ := console.ReadString('\n')
@@ -214,13 +227,13 @@ func Login() {
 				logger.Warn("please input SMS Code: ")
 				text, _ = console.ReadString('\n')
 				resp, err = Instance.SubmitSMS(strings.ReplaceAll(strings.ReplaceAll(text, "\n", ""), "\r", ""))
-				continue
+				continue  */
 
 			case client.TooManySMSRequestError:
 				fmt.Printf("too many SMS request, please try later.\n")
 				os.Exit(6)
 
-			case client.SMSOrVerifyNeededError:
+			/*	case client.SMSOrVerifyNeededError:
 				fmt.Println("device lock enabled, choose way to verify:")
 				fmt.Println("1. Send SMS Code to ", resp.SMSPhone)
 				fmt.Println("2. Scan QR Code")
@@ -243,14 +256,23 @@ func Login() {
 				default:
 					fmt.Println("invalid input")
 					os.Exit(2)
-				}
+				}  */
 
 			case client.SliderNeededError:
-				logger.Infoln("Slide verify indeed, please use QR code login.")
-				Instance.Disconnect()
-				Instance.Release()
-				Instance.QQClient = client.NewClientEmpty()
-				resp, err = QrcodeLogin()
+				logger.Warnf("please verify slider -> %v ", resp.VerifyURL)
+
+				logger.Warn("input ticket: (Enter to submit)")
+				text, _ = console.ReadString('\n')
+				ticket := strings.TrimSpace(text)
+				logger.Warn("input rand_str: (Enter to submit)")
+				text, _ = console.ReadString('\n')
+				randStr := strings.TrimSpace(text)
+
+				if ticket == "" {
+					fmt.Println("verify failed")
+					os.Exit(2)
+				}
+				resp, err = Instance.SubmitCaptcha(ticket, randStr, strings.Split(strings.Split(resp.VerifyURL, "sid=")[1], "&")[0])
 				continue
 
 			case client.OtherLoginError, client.UnknownLoginError:
@@ -262,24 +284,29 @@ func Login() {
 		break
 	}
 
-	logger.Infof("qq login: %s", Instance.Nickname)
-	_ = os.WriteFile("session.token", Instance.GenToken(), 0o644)
+	if config.GlobalConfig.QQ.Account != 0 && config.GlobalConfig.QQ.Account != int64(Instance.Uin) {
+		logger.Warnf("The QQ id in configure file (%v) is vary from logined.", config.GlobalConfig.QQ.Account)
+	}
+
+	logger.Infof("qq login: %s", Instance.NickName())
+	token, _ := Instance.Sig().Marshal()
+	_ = os.WriteFile("session.token", token, 0o644)
 }
 
 // RefreshList 刷新联系人
 func RefreshList() {
 	logger.Info("start reload friends list")
-	err := Instance.ReloadFriendList()
+	err := Instance.RefreshFriendCache()
 	if err != nil {
 		logger.WithError(err).Error("unable to load friends list")
 	}
-	logger.Infof("load %d friends", len(Instance.FriendList))
+	logger.Infof("load %d friends", len(Instance.GetCachedAllFriendsInfo()))
 	logger.Info("start reload groups list")
-	err = Instance.ReloadGroupList()
+	err = Instance.RefreshAllGroupsInfo()
 	if err != nil {
 		logger.WithError(err).Error("unable to load groups list")
 	}
-	logger.Infof("load %d groups", len(Instance.GroupList))
+	logger.Infof("load %d groups", len(Instance.GetCachedAllGroupsInfo()))
 }
 
 func MakeChan() {
@@ -298,7 +325,7 @@ func StartService() {
 }
 
 func RouteMsg(c *client.QQClient, msg *mirai.GroupMessage) {
-	if msgChan, ok := Instance.Chats[msg.GroupCode]; ok {
+	if msgChan, ok := Instance.Chats[int64(msg.GroupUin)]; ok {
 		logger.Infof("[%s]: %s", msg.Sender.Nickname, msg.ToString())
 		msgChan.tempChan <- msg
 	}

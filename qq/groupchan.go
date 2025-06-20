@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	mirai "github.com/Mrs4s/MiraiGo/message"
+	mirai "github.com/LagrangeDev/LagrangeGo/message"
 	"github.com/sihuan/qqtg-bridge/cache"
 	"github.com/sihuan/qqtg-bridge/config"
 	"github.com/sihuan/qqtg-bridge/message"
@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -34,7 +35,7 @@ func (bot *Bot) NewGroupChan(gid int64) {
 
 func (c ChatChan) Read() *message.Message {
 	msg := <-c.tempChan
-	cache.QQMID2MSG.Add(int64(msg.Id), msg)
+	cache.QQMID2MSG.Add(int64(msg.ID), msg)
 	var (
 		text      string
 		imageURLS []string
@@ -45,22 +46,22 @@ func (c ChatChan) Read() *message.Message {
 		case *mirai.TextElement:
 			text += e.Content //+ "\n"
 		case *mirai.FaceElement:
-			text += "[" + e.Name + "]"
-		case *mirai.MusicShareElement:
-			text += e.Title + ": " + e.MusicUrl
-		case *mirai.ServiceElement:
-			text += e.SubType + " " + e.Content
-		case *mirai.GroupImageElement:
+			text += "[id:" + strconv.FormatInt(int64(e.FaceID), 10) + "]"
+		//case *mirai.MusicShareElement:
+		//	text += e.Title + ": " + e.MusicUrl
+		//case *mirai.ServiceElement:
+		//	text += e.SubType + " " + e.Content
+		case *mirai.ImageElement:
 			if e.Flash {
 				tmpUrl := "https://gchat.qpic.cn/gchatpic_new/%d/%d-1234567890-%s/0?term=3"
-				tmpImg := strings.Replace(e.ImageId, "-", "", -1)
+				tmpImg := strings.Replace(e.ImageID, "-", "", -1)
 				tmpImg = strings.Replace(tmpImg, "{", "", -1)
 				tmpImg = strings.Replace(tmpImg, "}", "", -1)
-				tmpUrl = fmt.Sprintf(tmpUrl, config.GlobalConfig.QQ.Account, msg.GroupCode, tmpImg[:32])
+				tmpUrl = fmt.Sprintf(tmpUrl, config.GlobalConfig.QQ.Account, msg.GroupUin, tmpImg[:32])
 				// ImageId is the filename, we need it to identify gif images
-				imageURLS = append(imageURLS, fmt.Sprintf("%s\n%s", tmpUrl, e.ImageId))
+				imageURLS = append(imageURLS, fmt.Sprintf("%s\n%s", tmpUrl, e.ImageID))
 			} else {
-				imageURLS = append(imageURLS, fmt.Sprintf("%s\n%s", e.Url, e.ImageId))
+				imageURLS = append(imageURLS, fmt.Sprintf("%s\n%s", e.URL, e.ImageID))
 			}
 		case *mirai.AtElement:
 		case *mirai.ReplyElement:
@@ -72,7 +73,7 @@ func (c ChatChan) Read() *message.Message {
 	return &message.Message{
 		Sender:    msg.Sender.Nickname,
 		ImageURLs: imageURLS,
-		ID:        int64(msg.Id),
+		ID:        int64(msg.ID),
 		ReplyID:   replyid,
 		Text:      text,
 	}
@@ -85,7 +86,7 @@ func (c ChatChan) Write(msg *message.Message) {
 	if msg.ReplyID != 0 {
 		if value, ok := cache.TG2QQCache.Get(msg.ReplyID); ok {
 			if groupMsg, ok := cache.QQMID2MSG.Get(value.(int64)); ok {
-				sm.Append(mirai.NewReply(groupMsg.(*mirai.GroupMessage)))
+				sm.Append(mirai.NewGroupReply(groupMsg.(*mirai.GroupMessage)))
 			}
 		} else {
 			text = "无法定位的回复\n" + text
@@ -100,10 +101,10 @@ func (c ChatChan) Write(msg *message.Message) {
 		}
 	}
 
-	sentMsg := c.bot.SendGroupMessage(c.gid, sm)
-	cache.QQ2TGCache.Add(int64(sentMsg.Id), msg.ID)
-	cache.TG2QQCache.Add(msg.ID, int64(sentMsg.Id))
-	cache.QQMID2MSG.Add(int64(sentMsg.Id), sentMsg)
+	sentMsg, _ := c.bot.SendGroupMessage(uint32(c.gid), sm.Elements)
+	cache.QQ2TGCache.Add(int64(sentMsg.ID), msg.ID)
+	cache.TG2QQCache.Add(msg.ID, int64(sentMsg.ID))
+	cache.QQMID2MSG.Add(int64(sentMsg.ID), sentMsg)
 }
 
 func (c ChatChan) uploadImg(url string) (mirai.IMessageElement, error) {
@@ -150,5 +151,5 @@ func (c ChatChan) uploadImg(url string) (mirai.IMessageElement, error) {
 		}
 	}
 
-	return c.bot.UploadImage(mirai.Source{SourceType: mirai.SourceGroup, PrimaryID: c.gid}, bytes.NewReader(imgbyte))
+	return c.bot.UploadImage(mirai.Source{SourceType: mirai.SourceGroup, PrimaryID: c.gid}, mirai.NewStreamImage(bytes.NewReader(imgbyte)))
 }
